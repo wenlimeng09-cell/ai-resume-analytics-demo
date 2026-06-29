@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+secrets.toml
+
+# Local Streamlit and runtime files
+.streamlit/
+*.log
+work/
+
+# Local OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Generated demo reports
+outputs/*task_*.md
+
+# Local SQLite copy; deployment uses CSV sample data
+data/demo.sqlite
