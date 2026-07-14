@@ -6,13 +6,14 @@
 
 这是一个 **AI 简历优化助手 Demo + AI 产品 MVP 设计与效果评估项目**。项目围绕求职用户“不知道如何根据目标岗位修改简历”的问题，设计从 JD 解析、简历差距识别、结构化建议生成，到采纳反馈、优化报告导出和产品效果评估的完整闭环。
 
-项目定位为本地 / 在线可交互的 MVP，用于展示 AI 产品设计、生成策略、质量评估、数据分析和产品迭代思路。当前建议生成采用规则引擎，不接入真实大模型 API；分析数据为演示样本数据，不作为真实上线产品，也不宣称真实提升面试率。
+项目定位为本地 / 在线可交互的 MVP，用于展示 AI 产品设计、生成策略、质量评估、数据分析和产品迭代思路。建议生成采用“规则引擎 + 可选 DeepSeek V4 Flash”的双引擎设计：公开访问默认使用规则引擎，输入演示访问码后可体验真实模型，调用失败时自动回退到规则引擎。分析数据为演示样本数据，不作为真实上线产品，也不宣称真实提升面试率。
 
 ## 核心功能
 
 - 简历文本输入或 txt / md 文件上传
 - 目标岗位 JD 粘贴与关键词解析
-- 基于规则引擎生成结构化简历优化建议
+- 基于规则引擎或 DeepSeek V4 Flash 生成结构化简历优化建议
+- 真实模型通过访问码解锁，并提供调用次数限制、失败重试和规则兜底
 - 展示“问题定位 + 修改建议 + 示例改写 + 前后对比 + 匹配 JD 关键词”
 - 对每条建议执行“采纳 / 拒绝 / 暂不处理”，并收集拒绝原因
 - 当前 session 行为记录与任务状态更新
@@ -165,7 +166,7 @@
 - 在每条建议旁展示 JD 关键词绑定解释，提升可信度
 - 针对转行用户增加可迁移能力识别和岗位差距分析
 - 增加“有用 / 无用”反馈按钮，持续优化建议生成逻辑
-- 在流程和指标框架稳定后，再考虑接入真实 API 验证生成质量
+- 建立模型评测集，持续比较规则引擎与真实模型的生成质量、稳定性和单任务成本
 
 ## 技术栈
 
@@ -173,7 +174,8 @@
 - 数据处理：Python / pandas / NumPy
 - 可视化：Plotly / Streamlit 图表
 - 数据存储：CSV / SQLite
-- 建议生成：规则模拟，预留 API Provider 扩展口
+- 建议生成：规则引擎 / DeepSeek V4 Flash，使用统一 Provider 接口和 JSON 输出校验
+- 模型调用：OpenAI Python SDK 连接 DeepSeek OpenAI 兼容接口
 - 分析方法：漏斗分析、分群分析、Prompt A/B 实验、建议质量评分、导出转化影响因素分析
 
 ## 本地运行方式
@@ -189,19 +191,34 @@ streamlit run app_ai_pm.py
 python data/generate_mock_data.py
 ```
 
+### 可选：本地启用 DeepSeek
+
+在本地创建 `.streamlit/secrets.toml`，该文件已被 `.gitignore` 屏蔽：
+
+```toml
+DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
+DEMO_ACCESS_CODE = "你设置的演示访问码"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+MAX_LLM_CALLS_PER_SESSION = 3
+```
+
+未配置 Secrets 时应用仍可正常启动，规则引擎和固定演示样本看板不受影响。
+
 ## Streamlit Community Cloud 部署
 
 1. 将项目上传到 GitHub。
 2. 登录 Streamlit Community Cloud。
 3. 点击 New app / Create app。
 4. 选择 GitHub 仓库、branch 和入口文件 `app_ai_pm.py`。
-5. 点击 Deploy。
-6. 部署完成后复制公开访问链接，补充到 README 的“在线访问地址”，并放入简历或作品集。
+5. 在 App settings / Secrets 中填写 `DEEPSEEK_API_KEY`、`DEMO_ACCESS_CODE`、`DEEPSEEK_MODEL` 和 `MAX_LLM_CALLS_PER_SESSION`。
+6. 点击 Deploy；修改 Secrets 后需要保存并重启应用。
+7. 部署完成后复制公开访问链接，补充到 README 的“在线访问地址”，并放入简历或作品集。
 
 ## 项目边界说明
 
 - 当前项目为作品集 MVP Demo，主要验证产品流程和数据分析方法。
-- 当前建议生成基于规则引擎，不接入真实大模型 API。
+- 当前建议生成默认使用规则引擎；DeepSeek 仅作为访问码解锁的可选体验能力，并设置规则兜底。
+- 大模型生成结果仍可能存在偏差，用户需要依据真实经历决定是否采纳。
 - 用户行为数据为演示样本数据，少量体验反馈仅用于辅助展示。
 - 项目不作为真实上线产品，不追踪真实投递结果和真实面试反馈。
 - 本项目不宣称真实提升面试率或求职成功率。
@@ -209,7 +226,9 @@ python data/generate_mock_data.py
 ## 隐私说明
 
 - 示例简历和示例 JD 均为虚构数据。
+- 使用 DeepSeek 模式时，当前简历和 JD 会发送至 DeepSeek API；公开体验只应使用虚构或已脱敏内容。
+- 简历、JD、访问码和 API Key 不写入 CSV、模拟日志或服务器文件；导出的报告仅包含结构化建议，不包含原始简历或完整 JD。
 - 模拟数据中的 `user_id`、`task_id`、`event_id` 均为随机生成标识，不对应真实用户身份。
 - 项目不包含真实手机号、邮箱、地址、身份证号、真实简历或真实投递记录。
-- 项目不包含 API Key、`.env` 文件或 Streamlit secrets。
+- GitHub 仓库不包含 API Key、访问码、`.env` 文件或 Streamlit secrets。
 - `.gitignore` 已屏蔽 `.env`、`secrets.toml`、`.streamlit/secrets.toml`、`__pycache__`、本地日志和临时文件。

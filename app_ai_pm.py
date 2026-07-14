@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+import os
 import sys
 from datetime import datetime
 from html import escape
@@ -16,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from data.generate_mock_data import main as generate_mock_data
 from logic.metrics import adoption_driver_tables, calculate_funnel, north_star_metrics, prompt_ab_metrics
+from logic.llm_provider import LLMProviderError
 from logic.resume_analyzer import (
     analyze_resume_gaps,
     build_report_markdown,
@@ -28,8 +31,10 @@ from logic.resume_analyzer import (
 
 
 DATA_DIR = ROOT / "data"
-OUTPUT_DIR = ROOT / "outputs"
-SUGGESTION_PROVIDER = "mock"
+RULE_PROVIDER = "mock"
+DEEPSEEK_PROVIDER = "deepseek"
+MAX_RESUME_CHARS = 12000
+MAX_JD_CHARS = 8000
 PLOT_CONFIG = {"displayModeBar": False, "responsive": True}
 CHART_COLORS = ["#176B5B", "#D28A32", "#5C7C74", "#C65D4B", "#7D8F89"]
 REJECT_REASONS = ["建议太泛", "不符合目标岗位", "表达不自然", "已体现过", "不想修改"]
@@ -106,6 +111,9 @@ def inject_portfolio_styles() -> None:
         .case-hero {
             position: relative;
             overflow: hidden;
+            box-sizing: border-box;
+            width: 100%;
+            max-width: 100%;
             background: var(--brand-dark);
             color: #ffffff;
             border-radius: 8px;
@@ -147,6 +155,7 @@ def inject_portfolio_styles() -> None:
             line-height: 1.75;
             margin: 0.85rem 0 1.2rem;
             max-width: 880px;
+            overflow-wrap: anywhere;
         }
 
         .case-tags,
@@ -647,8 +656,13 @@ def inject_portfolio_styles() -> None:
         }
 
         @media (max-width: 640px) {
-            [data-testid="stMainBlockContainer"] { padding-top: 1rem; }
-            .case-hero { padding: 1.45rem 1.25rem; }
+            html, body, .stApp { max-width: 100%; overflow-x: hidden; }
+            [data-testid="stMainBlockContainer"] { padding-top: 1rem; max-width: 100%; }
+            .case-hero {
+                width: calc(100vw - 2rem);
+                max-width: calc(100vw - 2rem);
+                padding: 1.45rem 1.25rem;
+            }
             .case-hero::after { display: none; }
             .case-title { font-size: 1.75rem; }
             .page-intro { grid-template-columns: 1fr; gap: 0.55rem; }
@@ -709,6 +723,11 @@ def init_state() -> None:
         "pm_jd_text": SAMPLE_JD,
         "pm_user_type": "应届生",
         "pm_prompt_group": "B",
+        "pm_engine": RULE_PROVIDER,
+        "pm_api_unlocked": False,
+        "pm_llm_calls": 0,
+        "pm_last_provider": None,
+        "pm_generation_notice": "",
         "pm_suggestions": [],
         "pm_event_log": [],
         "pm_visited": False,
@@ -756,6 +775,8 @@ def load_ai_pm_sample() -> None:
     st.session_state.pm_prompt_group = "B"
     st.session_state.pm_suggestions = []
     st.session_state.pm_task_id = None
+    st.session_state.pm_last_provider = None
+    st.session_state.pm_generation_notice = ""
     log_event("load_ai_pm_sample")
 
 
@@ -782,16 +803,76 @@ def enrich_suggestions(suggestions: List[Dict[str, object]]) -> List[Dict[str, o
         keyword_text = "、".join(str(keyword) for keyword in keywords)
         row = dict(item)
         row.setdefault("reject_reason", "")
-        row["modification_reason"] = (
+        row.setdefault(
+            "modification_reason",
             f"这条建议绑定了目标 JD 中的 {keyword_text} 要求，"
-            "通过补充场景、动作和结果，帮助简历表达更贴合目标岗位。"
+            "通过补充场景、动作和结果，帮助简历表达更贴合目标岗位。",
         )
         if not row.get("original_expression"):
             row["original_expression"] = f"简历中对“{keyword_text}”的表达不够明确，缺少岗位匹配解释。"
         if not row.get("revised_expression"):
             row["revised_expression"] = row.get("revised_example", "")
+        row.setdefault(
+            "explainability_score",
+            min(
+                5,
+                max(
+                    1,
+                    round(
+                        (
+                            int(row.get("specificity_score", 1))
+                            + int(row.get("jd_match_score", 1))
+                            + int(row.get("actionability_score", 1))
+                        )
+                        / 3
+                    ),
+                ),
+            ),
+        )
         enriched.append(row)
     return enriched
+
+
+def _secret_value(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, os.environ.get(name, default))
+    except Exception:
+        value = os.environ.get(name, default)
+    return str(value) if value is not None else default
+
+
+def deepseek_settings() -> Dict[str, object]:
+    try:
+        max_calls = int(_secret_value("MAX_LLM_CALLS_PER_SESSION", "3"))
+    except ValueError:
+        max_calls = 3
+    return {
+        "api_key": _secret_value("DEEPSEEK_API_KEY"),
+        "access_code": _secret_value("DEMO_ACCESS_CODE"),
+        "model": _secret_value("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "max_calls": min(10, max(1, max_calls)),
+    }
+
+
+def provider_label(provider: str | None) -> str:
+    labels = {
+        RULE_PROVIDER: "规则引擎",
+        DEEPSEEK_PROVIDER: "DeepSeek V4 Flash",
+        "mock_fallback": "规则引擎（大模型调用失败后兜底）",
+    }
+    return labels.get(provider, "尚未生成")
+
+
+def deepseek_ready(settings: Dict[str, object]) -> tuple[bool, str]:
+    if not str(settings["api_key"]).strip():
+        return False, "公网环境尚未配置 DeepSeek API Key。"
+    if not str(settings["access_code"]).strip():
+        return False, "公网环境尚未配置演示访问码。"
+    if not st.session_state.pm_api_unlocked:
+        return False, "请输入演示访问码并完成解锁。"
+    if st.session_state.pm_llm_calls >= int(settings["max_calls"]):
+        return False, "本会话的大模型体验次数已用完，可继续使用规则引擎。"
+    return True, ""
 
 
 def set_suggestion_status(index: int, status: str, reason: str | None = None) -> None:
@@ -930,7 +1011,7 @@ def render_header() -> None:
                 结构化建议到采纳反馈与效果评估的完整产品闭环。
             </p>
             <div class="case-tags">
-                <span class="case-tag">规则引擎</span>
+                <span class="case-tag">规则引擎 + DeepSeek</span>
                 <span class="case-tag">演示样本数据</span>
                 <span class="case-tag">可交互 MVP</span>
                 <span class="case-tag">AI 输出质量评估</span>
@@ -984,12 +1065,12 @@ def render_overview(tables: Dict[str, pd.DataFrame]) -> None:
             <div class="info-card included">
                 <div class="card-kicker">IN SCOPE</div>
                 <div class="card-title">当前版本已实现</div>
-                <div class="card-copy">简历与 JD 输入、规则引擎生成建议、采纳/拒绝/暂不处理反馈、优化报告导出和产品效果评估。</div>
+                <div class="card-copy">简历与 JD 输入、规则引擎 / DeepSeek 双引擎生成、采纳/拒绝/暂不处理反馈、优化报告导出和产品效果评估。</div>
             </div>
             <div class="info-card excluded">
                 <div class="card-kicker">OUT OF SCOPE</div>
                 <div class="card-title">当前版本暂不实现</div>
-                <div class="card-copy">真实大模型接口、登录与权限、真实投递追踪、面试反馈和商业化能力。</div>
+                <div class="card-copy">登录与权限、真实投递追踪、面试反馈、商业化能力及大规模真实用户验证。</div>
             </div>
             <div class="info-card">
                 <div class="card-kicker">DATA NOTE</div>
@@ -999,7 +1080,7 @@ def render_overview(tables: Dict[str, pd.DataFrame]) -> None:
             <div class="info-card">
                 <div class="card-kicker">NEXT STEP</div>
                 <div class="card-title">后续扩展方向</div>
-                <div class="card-copy">接入真实大模型接口、岗位模板、用户反馈标注、生成策略版本管理与效果追踪。</div>
+                <div class="card-copy">扩展岗位模板、用户反馈标注、生成策略版本管理、模型质量评测与效果追踪。</div>
             </div>
         </div>
         """,
@@ -1023,7 +1104,7 @@ def render_product_experience() -> None:
             if st.button("加载 AI 产品岗位示例", use_container_width=True):
                 load_ai_pm_sample()
                 st.success("已加载 AI 产品岗位示例，可直接生成优化建议。")
-            profile_col, strategy_col = st.columns(2)
+            profile_col, strategy_col, engine_col = st.columns([1, 1.15, 1.15])
             profile_col.selectbox("用户类型", ["应届生", "实习生", "转行用户"], key="pm_user_type")
             strategy_col.radio(
                 "生成策略",
@@ -1033,13 +1114,60 @@ def render_product_experience() -> None:
                 format_func=strategy_label,
                 help="通用建议型适合基础优化，JD 匹配型更强调岗位关键词和修改理由。",
             )
+            engine_col.radio(
+                "生成引擎",
+                [RULE_PROVIDER, DEEPSEEK_PROVIDER],
+                key="pm_engine",
+                format_func=provider_label,
+                help="规则引擎稳定可控；DeepSeek 可理解更开放的岗位描述和简历表达。",
+            )
+
+            settings = deepseek_settings()
+            if st.session_state.pm_engine == DEEPSEEK_PROVIDER:
+                st.warning(
+                    "大模型模式会将当前简历与 JD 发送至 DeepSeek API。"
+                    "请仅使用虚构或已脱敏内容，不要上传手机号、邮箱、地址等隐私信息。"
+                )
+                if str(settings["api_key"]).strip() and str(settings["access_code"]).strip():
+                    if not st.session_state.pm_api_unlocked:
+                        unlock_col, button_col = st.columns([3, 1])
+                        access_code = unlock_col.text_input(
+                            "演示访问码",
+                            type="password",
+                            key="pm_access_code",
+                            placeholder="输入访问码后解锁真实模型",
+                        )
+                        if button_col.button("解锁", use_container_width=True):
+                            if hmac.compare_digest(access_code, str(settings["access_code"])):
+                                st.session_state.pm_api_unlocked = True
+                                st.success("DeepSeek 大模型已在当前会话中解锁。")
+                                st.rerun()
+                            else:
+                                st.error("访问码不正确。")
+                    else:
+                        remaining = int(settings["max_calls"]) - st.session_state.pm_llm_calls
+                        st.success(f"DeepSeek 已解锁，本会话还可生成 {max(0, remaining)} 次。")
+                else:
+                    st.info("DeepSeek 尚未在部署环境中配置，当前可继续使用规则引擎。")
+
             uploaded_file = st.file_uploader("上传简历文件（txt / md）", type=["txt", "md"])
             if uploaded_file is not None:
-                st.session_state.pm_resume_text = decode_uploaded_file(uploaded_file)
+                st.session_state.pm_resume_text = decode_uploaded_file(uploaded_file)[:MAX_RESUME_CHARS]
                 log_event("upload_resume")
-            st.text_area("简历文本", key="pm_resume_text", height=210)
-            st.text_area("目标岗位 JD", key="pm_jd_text", height=210)
-            if st.button("生成优化建议", type="primary", use_container_width=True):
+            st.text_area("简历文本", key="pm_resume_text", height=210, max_chars=MAX_RESUME_CHARS)
+            st.text_area("目标岗位 JD", key="pm_jd_text", height=210, max_chars=MAX_JD_CHARS)
+
+            api_ready, api_reason = deepseek_ready(settings)
+            generation_disabled = st.session_state.pm_engine == DEEPSEEK_PROVIDER and not api_ready
+            if generation_disabled:
+                st.caption(api_reason)
+
+            if st.button(
+                "生成优化建议",
+                type="primary",
+                use_container_width=True,
+                disabled=generation_disabled,
+            ):
                 if not st.session_state.pm_resume_text.strip() or not st.session_state.pm_jd_text.strip():
                     st.warning("请先填写简历文本和目标岗位 JD。")
                 else:
@@ -1047,17 +1175,62 @@ def render_product_experience() -> None:
                     st.session_state.pm_task_id = task_id
                     log_event("upload_resume")
                     log_event("upload_jd")
-                    raw_suggestions = generate_suggestions(
-                        resume_text=st.session_state.pm_resume_text,
-                        jd_text=st.session_state.pm_jd_text,
-                        task_id=task_id,
-                        user_id=st.session_state.pm_user_id,
-                        prompt_group=st.session_state.pm_prompt_group,
-                        suggestion_provider=SUGGESTION_PROVIDER,
-                    )
+                    selected_provider = st.session_state.pm_engine
+                    actual_provider = selected_provider
+                    try:
+                        if selected_provider == DEEPSEEK_PROVIDER:
+                            st.session_state.pm_llm_calls += 1
+                            with st.spinner("DeepSeek 正在分析简历与岗位要求..."):
+                                raw_suggestions = generate_suggestions(
+                                    resume_text=st.session_state.pm_resume_text,
+                                    jd_text=st.session_state.pm_jd_text,
+                                    task_id=task_id,
+                                    user_id=st.session_state.pm_user_id,
+                                    prompt_group=st.session_state.pm_prompt_group,
+                                    suggestion_provider=DEEPSEEK_PROVIDER,
+                                    provider_config={
+                                        "api_key": settings["api_key"],
+                                        "model": settings["model"],
+                                    },
+                                )
+                        else:
+                            raw_suggestions = generate_suggestions(
+                                resume_text=st.session_state.pm_resume_text,
+                                jd_text=st.session_state.pm_jd_text,
+                                task_id=task_id,
+                                user_id=st.session_state.pm_user_id,
+                                prompt_group=st.session_state.pm_prompt_group,
+                                suggestion_provider=RULE_PROVIDER,
+                            )
+                    except LLMProviderError:
+                        raw_suggestions = generate_suggestions(
+                            resume_text=st.session_state.pm_resume_text,
+                            jd_text=st.session_state.pm_jd_text,
+                            task_id=task_id,
+                            user_id=st.session_state.pm_user_id,
+                            prompt_group=st.session_state.pm_prompt_group,
+                            suggestion_provider=RULE_PROVIDER,
+                        )
+                        actual_provider = "mock_fallback"
                     st.session_state.pm_suggestions = enrich_suggestions(raw_suggestions)
-                    log_event("generate_suggestion")
-                    st.success(f"已生成 {len(st.session_state.pm_suggestions)} 条结构化建议。")
+                    st.session_state.pm_last_provider = actual_provider
+                    if actual_provider == "mock_fallback":
+                        st.session_state.pm_generation_notice = (
+                            "DeepSeek 调用未成功，本轮已自动切换为规则引擎，"
+                            "当前展示内容不是大模型生成结果。"
+                        )
+                    else:
+                        st.session_state.pm_generation_notice = (
+                            f"已通过{provider_label(actual_provider)}生成 "
+                            f"{len(st.session_state.pm_suggestions)} 条结构化建议。"
+                        )
+                    log_event("generate_suggestion", extra=f"provider={actual_provider}")
+
+            if st.session_state.pm_generation_notice:
+                if st.session_state.pm_last_provider == "mock_fallback":
+                    st.warning(st.session_state.pm_generation_notice)
+                else:
+                    st.success(st.session_state.pm_generation_notice)
 
     with right:
         with st.container(border=True):
@@ -1065,6 +1238,7 @@ def render_product_experience() -> None:
             scores = current_scores()
             st.markdown("#### 当前任务概览")
             st.caption("建议处理状态会实时反映在匹配分和报告导出条件中。")
+            st.caption(f"本轮生成引擎：{provider_label(st.session_state.pm_last_provider)}")
             cols = st.columns(2)
             cols[0].metric("当前匹配分", scores["current"], delta=f"较原始 +{scores['current'] - scores['original']}")
             cols[1].metric("预计提升空间", f"+{scores['potential']}")
@@ -1090,8 +1264,6 @@ def render_product_experience() -> None:
                 use_container_width=True,
                 disabled=counts["adopted"] < 1,
             ):
-                OUTPUT_DIR.mkdir(exist_ok=True)
-                (OUTPUT_DIR / report_name).write_text(report, encoding="utf-8")
                 log_event("export_report")
 
     render_suggestion_cards()
@@ -1181,7 +1353,7 @@ def render_suggestion_cards() -> None:
                 score_cols[0].metric("具体性", item["specificity_score"])
                 score_cols[1].metric("JD 匹配度", item["jd_match_score"])
                 score_cols[2].metric("可执行性", item["actionability_score"])
-                score_cols[3].metric("可信度/可解释性", item["jd_match_score"])
+                score_cols[3].metric("可信度/可解释性", item.get("explainability_score", item["jd_match_score"]))
 
 
 def render_ai_capability_design() -> None:
@@ -1200,7 +1372,8 @@ def render_ai_capability_design() -> None:
     st.markdown(f'<div class="flow-strip">{flow_html}</div>', unsafe_allow_html=True)
     render_insight(
         "当前实现",
-        "使用规则引擎保证演示稳定和输出可控；后续接入真实大模型接口时，继续保留结构约束、事实边界和质量评估。",
+        "默认使用规则引擎保证公开演示稳定；解锁后可调用 DeepSeek V4 Flash。"
+        "两种引擎共用结构约束、事实边界、质量评分和用户反馈流程。",
     )
 
     keywords = extract_jd_keywords(st.session_state.pm_jd_text)
@@ -1235,9 +1408,9 @@ def render_ai_capability_design() -> None:
 
     render_section_heading("生成能力扩展设计")
     provider_rows = [
-        ("生成引擎", "规则引擎保证稳定和可控", "接入真实大模型接口，提升灵活性与表达质量"),
-        ("策略管理", "内置通用建议型与 JD 匹配型", "支持模板管理、版本对比与效果追踪"),
-        ("输出安全", "固定规则避免虚构经历", "增加隐私脱敏、事实校验与安全提示"),
+        ("生成引擎", "规则引擎默认运行，DeepSeek 按访问码解锁并支持失败兜底", "增加多模型对比、成本监控和质量评测"),
+        ("策略管理", "两种引擎均支持通用建议型与 JD 匹配型", "支持模板管理、版本对比与效果追踪"),
+        ("输出安全", "限制新数字、校验 JD 关键词并要求结构化 JSON", "增加自动隐私脱敏、事实校验与人工抽检"),
     ]
     provider_html = "".join(
         f'<div class="info-card"><div class="card-kicker">{escape(layer)}</div>'
@@ -1564,10 +1737,10 @@ def render_iteration_roadmap() -> None:
         },
         {
                 "阶段": "P2",
-                "优化方向": "接入真实大模型接口",
-                "功能方案": "真实 LLM API、生成结果安全校验",
-                "优先级依据": "依赖真实模型能力，成本和稳定性需要后期验证",
-                "验收指标": "响应稳定性、质量评分、成本可控",
+                "优化方向": "模型评测与多 Provider",
+                "功能方案": "候选模型对比、自动评测集、调用成本与失败率监控",
+                "优先级依据": "真实模型已完成可选接入，下一步需要验证质量与成本平衡",
+                "验收指标": "响应成功率、质量评分和单任务成本可追踪",
         },
         {
                 "阶段": "P2",
