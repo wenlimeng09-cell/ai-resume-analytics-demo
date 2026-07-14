@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from data.generate_mock_data import main as generate_mock_data
 from logic.metrics import adoption_driver_tables, calculate_funnel, north_star_metrics, prompt_ab_metrics
 from logic.llm_provider import LLMProviderError
+from logic.resume_parser import ResumeParseError, file_fingerprint, parse_resume_file
 from logic.resume_analyzer import (
     analyze_resume_gaps,
     build_report_markdown,
@@ -728,6 +729,13 @@ def init_state() -> None:
         "pm_llm_calls": 0,
         "pm_last_provider": None,
         "pm_generation_notice": "",
+        "pm_uploaded_file_fingerprint": "",
+        "pm_upload_active": False,
+        "pm_upload_notice": "",
+        "pm_upload_warning": "",
+        "pm_upload_error": "",
+        "pm_last_logged_resume_hash": "",
+        "pm_last_logged_jd_hash": "",
         "pm_suggestions": [],
         "pm_event_log": [],
         "pm_visited": False,
@@ -756,16 +764,15 @@ def log_event(event_name: str, suggestion_id: str | None = None, extra: str | No
     )
 
 
-def decode_uploaded_file(uploaded_file) -> str:
-    if uploaded_file is None:
-        return ""
-    raw = uploaded_file.read()
-    for encoding in ("utf-8", "utf-8-sig", "gbk"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="ignore")
+def log_input_event_once(event_name: str, text: str, extra: str | None = None) -> None:
+    state_key = {
+        "upload_resume": "pm_last_logged_resume_hash",
+        "upload_jd": "pm_last_logged_jd_hash",
+    }[event_name]
+    content_hash = file_fingerprint(text.encode("utf-8"))
+    if st.session_state[state_key] != content_hash:
+        log_event(event_name, extra=extra)
+        st.session_state[state_key] = content_hash
 
 
 def load_ai_pm_sample() -> None:
@@ -1150,10 +1157,54 @@ def render_product_experience() -> None:
                 else:
                     st.info("DeepSeek 尚未在部署环境中配置，当前可继续使用规则引擎。")
 
-            uploaded_file = st.file_uploader("上传简历文件（txt / md）", type=["txt", "md"])
-            if uploaded_file is not None:
-                st.session_state.pm_resume_text = decode_uploaded_file(uploaded_file)[:MAX_RESUME_CHARS]
-                log_event("upload_resume")
+            uploaded_file = st.file_uploader(
+                "上传简历文件（PDF / DOCX / TXT / MD）",
+                type=["pdf", "docx", "txt", "md"],
+                help="支持现代 Word 文档和含文字层的 PDF；扫描件 PDF 暂不支持 OCR。",
+            )
+            if uploaded_file is None:
+                if st.session_state.pm_upload_active:
+                    st.session_state.pm_uploaded_file_fingerprint = ""
+                    st.session_state.pm_upload_active = False
+                    st.session_state.pm_upload_notice = ""
+                    st.session_state.pm_upload_warning = ""
+                    st.session_state.pm_upload_error = ""
+            else:
+                file_bytes = uploaded_file.getvalue()
+                upload_fingerprint = file_fingerprint(file_bytes)
+                st.session_state.pm_upload_active = True
+                if upload_fingerprint != st.session_state.pm_uploaded_file_fingerprint:
+                    st.session_state.pm_uploaded_file_fingerprint = upload_fingerprint
+                    try:
+                        parsed_resume = parse_resume_file(
+                            uploaded_file.name,
+                            file_bytes,
+                            max_chars=MAX_RESUME_CHARS,
+                        )
+                    except ResumeParseError as exc:
+                        st.session_state.pm_upload_notice = ""
+                        st.session_state.pm_upload_warning = ""
+                        st.session_state.pm_upload_error = str(exc)
+                    else:
+                        st.session_state.pm_resume_text = parsed_resume.text
+                        st.session_state.pm_upload_notice = (
+                            f"已从 {parsed_resume.file_type} 文件提取 {parsed_resume.char_count} 字，"
+                            "可在下方检查和编辑。"
+                        )
+                        st.session_state.pm_upload_warning = " ".join(parsed_resume.warnings)
+                        st.session_state.pm_upload_error = ""
+                        log_input_event_once(
+                            "upload_resume",
+                            parsed_resume.text,
+                            extra=f"format={parsed_resume.file_type.lower()};size_bytes={len(file_bytes)}",
+                        )
+            if st.session_state.pm_upload_notice:
+                st.success(st.session_state.pm_upload_notice)
+            if st.session_state.pm_upload_warning:
+                st.warning(st.session_state.pm_upload_warning)
+            if st.session_state.pm_upload_error:
+                st.error(st.session_state.pm_upload_error)
+            st.caption("支持 PDF、DOCX、TXT、MD；扫描版 PDF 暂不支持 OCR，旧版 .doc 请另存为 .docx。")
             st.text_area("简历文本", key="pm_resume_text", height=210, max_chars=MAX_RESUME_CHARS)
             st.text_area("目标岗位 JD", key="pm_jd_text", height=210, max_chars=MAX_JD_CHARS)
 
@@ -1173,8 +1224,8 @@ def render_product_experience() -> None:
                 else:
                     task_id = stable_id("pm_task", st.session_state.pm_session_id, st.session_state.pm_resume_text, st.session_state.pm_jd_text)
                     st.session_state.pm_task_id = task_id
-                    log_event("upload_resume")
-                    log_event("upload_jd")
+                    log_input_event_once("upload_resume", st.session_state.pm_resume_text)
+                    log_input_event_once("upload_jd", st.session_state.pm_jd_text)
                     selected_provider = st.session_state.pm_engine
                     actual_provider = selected_provider
                     try:

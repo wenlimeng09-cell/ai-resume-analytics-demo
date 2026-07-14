@@ -10,7 +10,7 @@
 
 ## 核心功能
 
-- 简历文本输入或 txt / md 文件上传
+- 简历文本输入，或 PDF / DOCX / TXT / MD 文件上传与文本提取
 - 目标岗位 JD 粘贴与关键词解析
 - 基于规则引擎或 DeepSeek V4 Flash 生成结构化简历优化建议
 - 真实模型通过访问码解锁，并提供调用次数限制、失败重试和规则兜底
@@ -176,6 +176,7 @@
 - 数据存储：CSV / SQLite
 - 建议生成：规则引擎 / DeepSeek V4 Flash，使用统一 Provider 接口和 JSON 输出校验
 - 模型调用：OpenAI Python SDK 连接 DeepSeek OpenAI 兼容接口
+- 文件解析：python-docx 提取 Word 正文与表格，pypdf 提取文字型 PDF
 - 分析方法：漏斗分析、分群分析、Prompt A/B 实验、建议质量评分、导出转化影响因素分析
 
 ## 本地运行方式
@@ -226,6 +227,8 @@ MAX_LLM_CALLS_PER_SESSION = 3
 ## 隐私说明
 
 - 示例简历和示例 JD 均为虚构数据。
+- 上传支持 `.pdf`、`.docx`、`.txt` 和 `.md`；PDF 需要包含可复制的文字层，扫描件暂不支持 OCR，旧版 `.doc` 需要另存为 `.docx`。
+- 上传文件只在当前浏览器会话中解析，文件原文和文件名不会写入 CSV、模拟日志或服务器文件。
 - 使用 DeepSeek 模式时，当前简历和 JD 会发送至 DeepSeek API；公开体验只应使用虚构或已脱敏内容。
 - 简历、JD、访问码和 API Key 不写入 CSV、模拟日志或服务器文件；导出的报告仅包含结构化建议，不包含原始简历或完整 JD。
 - 模拟数据中的 `user_id`、`task_id`、`event_id` 均为随机生成标识，不对应真实用户身份。
