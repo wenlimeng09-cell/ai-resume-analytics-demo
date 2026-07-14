@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -201,9 +201,19 @@ def generate_suggestions(
     user_id: str,
     prompt_group: str = "B",
     suggestion_provider: str = "mock",
+    provider_config: Mapping[str, object] | None = None,
 ) -> List[Dict[str, object]]:
+    if suggestion_provider == "deepseek":
+        return _generate_deepseek_suggestions(
+            resume_text=resume_text,
+            jd_text=jd_text,
+            task_id=task_id,
+            user_id=user_id,
+            prompt_group=prompt_group,
+            provider_config=provider_config or {},
+        )
     if suggestion_provider != "mock":
-        raise NotImplementedError("API provider is reserved for future model integration.")
+        raise ValueError(f"Unsupported suggestion provider: {suggestion_provider}")
 
     jd_keywords = extract_jd_keywords(jd_text)
     suggestions: List[Dict[str, object]] = []
@@ -257,6 +267,49 @@ def generate_suggestions(
         )
 
     return suggestions[:6]
+
+
+def _generate_deepseek_suggestions(
+    resume_text: str,
+    jd_text: str,
+    task_id: str,
+    user_id: str,
+    prompt_group: str,
+    provider_config: Mapping[str, object],
+) -> List[Dict[str, object]]:
+    from logic.llm_provider import DeepSeekConfig, generate_deepseek_suggestions
+
+    config = DeepSeekConfig(
+        api_key=str(provider_config.get("api_key", "")),
+        model=str(provider_config.get("model", "deepseek-v4-flash")),
+        timeout_seconds=float(provider_config.get("timeout_seconds", 45.0)),
+        max_output_tokens=int(provider_config.get("max_output_tokens", 4000)),
+    )
+    raw_suggestions = generate_deepseek_suggestions(
+        resume_text=resume_text,
+        jd_text=jd_text,
+        prompt_group=prompt_group,
+        config=config,
+        client=provider_config.get("client"),
+    )
+    suggestions: List[Dict[str, object]] = []
+    for index, raw in enumerate(raw_suggestions, start=1):
+        row = dict(raw)
+        keywords = list(row.get("matched_jd_keywords") or [])
+        matched_keyword = keywords[0] if keywords else "通用表达"
+        row.update(
+            {
+                "suggestion_id": stable_id("sg", task_id, user_id, matched_keyword, str(index)),
+                "task_id": task_id,
+                "user_id": user_id,
+                "prompt_group": prompt_group,
+                "matched_keyword": matched_keyword,
+                "adopted": None,
+                "status": "pending",
+            }
+        )
+        suggestions.append(row)
+    return suggestions
 
 
 def _fallback_suggestions(
@@ -337,12 +390,19 @@ def build_report_markdown(
                 f"- 简历模块：{item['resume_section']}",
                 f"- 问题定位：{item['current_problem']}",
                 f"- 修改建议：{item['suggestion']}",
-                f"- 原表达：{item.get('original_expression', '')}",
                 f"- 优化后表达：{item.get('revised_expression', item.get('revised_example', ''))}",
                 f"- 示例改写：{item['revised_example']}",
-                f"- 质量评分：具体性 {item['specificity_score']} / JD 匹配度 {item['jd_match_score']} / 可执行性 {item['actionability_score']}",
+                f"- 质量评分：具体性 {item['specificity_score']} / JD 匹配度 {item['jd_match_score']} / "
+                f"可执行性 {item['actionability_score']} / "
+                f"可信度与可解释性 {item.get('explainability_score', item['jd_match_score'])}",
                 "",
             ]
         )
-    lines.extend(["## 原始输入摘要", "", "### JD", "", jd_text[:1200], "", "### 简历", "", resume_text[:1200]])
+    lines.extend(
+        [
+            "## 隐私说明",
+            "",
+            "本报告仅包含结构化优化建议，不包含用户输入的原始简历或完整 JD。",
+        ]
+    )
     return "\n".join(lines)

@@ -27,6 +27,7 @@ Thumbs.db
 
 # Generated demo reports
 outputs/*task_*.md
+outputs/*.zip
 
 # Local SQLite copy; deployment uses CSV sample data
 data/demo.sqlite
