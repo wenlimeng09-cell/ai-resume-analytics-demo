@@ -8,7 +8,7 @@ from logic.llm_provider import DeepSeekConfig, LLMProviderError, generate_deepse
 from logic.resume_analyzer import build_report_markdown, generate_suggestions
 
 
-RESUME = "负责用户调研与产品需求分析，使用 Python 完成数据整理。"
+RESUME = "负责用户调研与产品需求分析，整理 Prompt 策略、用户路径和产品效果评估的用户反馈，使用 Python 完成数据整理。"
 JD = "负责 AI 产品需求分析、Prompt 策略、用户路径和产品效果评估。"
 
 
@@ -19,10 +19,10 @@ def suggestion_payload(keywords: list[str] | None = None) -> dict:
         rows.append(
             {
                 "resume_section": "项目经历",
-                "original_expression": "负责用户调研与产品需求分析",
+                "original_expression": "整理 Prompt 策略、用户路径和产品效果评估的用户反馈",
                 "current_problem": f"简历对{focus}的表达不够完整。",
                 "suggestion": f"补充{focus}的设计过程与产品判断依据。",
-                "revised_expression": f"围绕目标岗位要求梳理{focus}，并结合用户反馈形成产品迭代闭环。",
+                "revised_expression": f"整理与{focus}相关的用户反馈。",
                 "modification_reason": f"对应 JD 中的{focus}要求，突出产品设计与效果评估能力。",
                 "matched_jd_keywords": matched_keywords,
                 "suggestion_type": "AI 产品表达",

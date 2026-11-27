@@ -411,6 +411,9 @@ def render_jd_parser() -> None:
 
     gaps = pd.DataFrame(analyze_resume_gaps(st.session_state.resume_text, st.session_state.jd_text))
     st.markdown("#### 简历缺口分析")
+    if gaps.empty:
+        st.info("当前岗位描述未命中规则词库。")
+        return
     st.dataframe(gaps, use_container_width=True, hide_index=True)
     high_priority = gaps[gaps["优先级"].isin(["高", "中"])]["JD 要求"].tolist()
     if high_priority:
