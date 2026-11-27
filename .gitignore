@@ -15,7 +15,8 @@ env/
 secrets.toml
 
 # Local Streamlit and runtime files
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 *.log
 work/
 

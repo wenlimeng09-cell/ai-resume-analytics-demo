@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Dict, Iterable, List, Sequence
 
 
@@ -12,107 +14,72 @@ class KeywordRule:
     aliases: Sequence[str]
     suggestion_type: str
     resume_section: str
-    problem_template: str
     suggestion_template: str
     example_template: str
 
 
-KEYWORD_RULES: List[KeywordRule] = [
+KEYWORD_RULES = [
     KeywordRule(
-        keyword="SQL",
-        aliases=("sql", "mysql", "hive", "查询", "取数"),
-        suggestion_type="技能补强",
-        resume_section="技能",
-        problem_template="JD 强调 {keyword}，但简历中对数据查询或取数能力表达不足。",
-        suggestion_template="补充你使用 {keyword} 完成数据提取、清洗或指标计算的经历，并写清业务场景和结果。",
-        example_template="使用 {keyword} 搭建用户行为数据查询逻辑，完成核心漏斗指标口径校验，支持产品优化决策。",
+        "SQL", ("sql", "sql server", "mysql", "postgresql", "hivesql", "sparksql"), "技能补强", "技能",
+        "写明查的是哪类数据、采用什么统计口径，以及查询结果交给谁使用。",
+        "用【实际使用的查询工具】从【数据源】按【口径】统计【指标】，用于【用途】。",
     ),
     KeywordRule(
-        keyword="Python",
-        aliases=("python", "pandas", "numpy", "sklearn", "脚本"),
-        suggestion_type="技能补强",
-        resume_section="技能",
-        problem_template="JD 提到 {keyword}，但简历没有充分体现自动化分析或数据处理能力。",
-        suggestion_template="增加使用 {keyword} 清洗数据、构建分析脚本或自动化报表的项目描述。",
-        example_template="使用 {keyword} 和 pandas 完成用户行为日志清洗、指标计算和可视化数据准备，提升分析效率。",
+        "Python", ("python", "pandas", "numpy", "scikit-learn"), "技能补强", "技能",
+        "选一项实际做过的数据处理任务，写出输入、处理步骤和输出。",
+        "用【实际使用的工具或库】处理【数据】，通过【具体步骤】生成【交付物】。",
     ),
     KeywordRule(
-        keyword="数据分析",
-        aliases=("数据分析", "分析", "洞察", "归因"),
-        suggestion_type="项目表达",
-        resume_section="项目经历",
-        problem_template="JD 关注 {keyword}，但简历中的分析过程和业务结论还不够完整。",
-        suggestion_template="把项目描述改成“问题-指标-分析-结论-动作”的结构，突出你的分析闭环。",
-        example_template="围绕简历优化路径建立漏斗和采纳指标，定位建议采纳环节流失，并提出结构化建议展示方案。",
+        "Excel", ("excel", "power query", "数据透视表"), "工具表达", "技能",
+        "交代工作表处理什么数据，以及你用哪项功能解决了什么问题。",
+        "在【实际使用的表格工具】中通过【功能】核算【指标】，供【使用方】核对【事项】。",
     ),
     KeywordRule(
-        keyword="A/B 实验",
-        aliases=("a/b", "ab test", "实验", "对照组", "实验组"),
-        suggestion_type="方法补充",
-        resume_section="项目经历",
-        problem_template="JD 出现 {keyword}，但简历没有体现实验设计或效果评估能力。",
-        suggestion_template="补充实验分组、核心指标和判断标准，说明你如何比较不同方案效果。",
-        example_template="设计 A/B 实验比较通用建议型 Prompt 与 JD 匹配型 Prompt，评估建议采纳率和报告导出率差异。",
+        "数据分析", ("数据分析", "行为分析", "漏斗分析", "归因分析", "专题分析", "data analysis"),
+        "项目表达", "项目经历", "选一个业务问题，说明比较了哪些数据、发现了什么。",
+        "为回答【业务问题】，按【维度】比较【指标】，观察到【实际发现】。",
     ),
     KeywordRule(
-        keyword="用户增长",
-        aliases=("用户增长", "增长", "转化", "拉新", "活跃"),
-        suggestion_type="业务表达",
-        resume_section="项目经历",
-        problem_template="JD 提到 {keyword}，但简历没有清楚展示你如何分析用户路径和转化问题。",
-        suggestion_template="增加用户路径、关键转化指标和优化动作，让经历更贴近增长或运营分析岗位。",
-        example_template="拆解访问、上传简历、生成建议、采纳建议和导出报告路径，识别核心流失环节并提出优化方案。",
+        "A/B 实验", ("a/b", "a/b test", "a/b testing", "ab test", "ab testing", "ab实验", "分流实验", "随机对照"),
+        "方法补充", "项目经历", "说明实际参与的实验环节、分组单位和观测指标。有实验结果时再写数值。",
+        "在【实验】中负责【本人职责】，按【分组单位】比较【方案】的【指标】。",
     ),
     KeywordRule(
-        keyword="指标体系",
-        aliases=("指标体系", "指标", "口径", "北极星"),
-        suggestion_type="指标补强",
-        resume_section="项目经历",
-        problem_template="JD 强调 {keyword}，但简历对指标定义和分析口径呈现不足。",
-        suggestion_template="补充你设计的核心指标、计算口径和业务用途。",
-        example_template="构建覆盖漏斗转化、建议采纳、Prompt A/B、建议质量和用户分群的指标体系。",
+        "用户增长", ("用户增长", "增长分析", "转化漏斗", "转化路径", "用户留存", "拉新", "user growth"),
+        "业务表达", "项目经历", "选一个实际跟踪过的用户环节，写清目标人群和判断变化的指标。",
+        "跟踪【目标人群】从【环节一】到【环节二】的【指标】，发现【观察结果】。",
     ),
     KeywordRule(
-        keyword="BI",
-        aliases=("bi", "tableau", "power bi", "looker", "看板", "dashboard", "可视化"),
-        suggestion_type="工具表达",
-        resume_section="技能",
-        problem_template="JD 提到 {keyword} 或看板能力，但简历中可视化交付物不够突出。",
-        suggestion_template="写明你使用的看板工具、展示的图表和服务的业务问题。",
-        example_template="使用 Streamlit 和 Plotly 搭建本地分析看板，展示漏斗、A/B 实验、用户分群和建议质量分析。",
+        "指标体系", ("指标体系", "指标口径", "指标监控", "指标定义", "北极星指标", "metric definition"),
+        "指标补强", "项目经历", "用一个亲自维护或定义的指标说明口径、统计周期及使用场景。",
+        "为【场景】维护【指标】，按【口径与周期】统计，供【使用方】判断【问题】。",
     ),
     KeywordRule(
-        keyword="Prompt",
-        aliases=("prompt", "提示词", "大模型", "llm"),
-        suggestion_type="AI 产品表达",
-        resume_section="项目经历",
-        problem_template="JD 关注 {keyword}，但简历没有体现 AI 生成逻辑或 Prompt 评估方法。",
-        suggestion_template="补充 Prompt 分组、生成策略和建议质量评估维度。",
-        example_template="设计通用建议型与 JD 匹配型 Prompt，对比建议采纳率、导出率和平均质量评分。",
+        "BI", ("bi", "power bi", "powerbi", "tableau", "metabase", "looker", "看板", "dashboard", "business intelligence"),
+        "工具表达", "技能", "写出实际使用的看板工具、展示对象和看板支持的业务判断。",
+        "用【实际工具】制作【主题】看板，供【使用者】跟踪【指标】。",
     ),
     KeywordRule(
-        keyword="RAG",
-        aliases=("rag", "检索增强", "知识库", "向量"),
-        suggestion_type="AI 产品表达",
-        resume_section="项目经历",
-        problem_template="JD 提到 {keyword}，但简历尚未展示相关 AI 产品理解。",
-        suggestion_template="如果有相关经历，可补充知识检索、上下文匹配或候选内容召回逻辑；没有则避免硬写，改为说明预留扩展方向。",
-        example_template="预留 API provider 与知识库扩展接口，后续可接入 RAG 生成更贴合 JD 的简历改写建议。",
+        "Prompt", ("prompt", "prompts", "提示词", "提示工程"), "AI 产品表达", "项目经历",
+        "说明提示词解决的任务、你具体调整的内容和核对输出的方式。",
+        "围绕【任务】调整【提示词要素】，通过【检查方法】核对【输出】。",
+    ),
+    KeywordRule(
+        "RAG", ("rag", "检索增强", "retrieval augmented generation", "retrieval-augmented generation"),
+        "AI 产品表达", "项目经历", "说明你实际参与了哪一步检索或生成，以及如何检查输出有据可查。",
+        "在【应用场景】中负责【本人实施的环节】，用【实际方法】核对回答与资料的一致性。",
     ),
 ]
 
-DEFAULT_KEYWORDS = ("SQL", "Python", "数据分析", "指标体系", "A/B 实验")
-
 KEYWORD_CATEGORIES = {
-    "数据分析能力": ["SQL", "Python", "数据分析", "BI"],
+    "数据分析能力": ["SQL", "Python", "Excel", "数据分析", "BI"],
     "实验与增长能力": ["A/B 实验", "用户增长", "指标体系"],
     "AI 产品能力": ["Prompt", "RAG"],
-    "业务理解能力": ["用户增长", "产品优化", "指标体系"],
 }
 
 
 def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip().lower()
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
 
 
 def stable_id(prefix: str, *parts: str) -> str:
@@ -120,78 +87,147 @@ def stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}_{hashlib.md5(raw).hexdigest()[:10]}"
 
 
+@lru_cache(maxsize=64)
+def _alias_pattern(aliases: tuple[str, ...]) -> re.Pattern:
+    alternatives = []
+    for alias in sorted(aliases, key=len, reverse=True):
+        alias = normalize_text(alias)
+        pattern = re.escape(alias).replace(r"\ ", r"\s+").replace("/", r"\s*/\s*")
+        if alias[0].isascii() and alias[0].isalnum():
+            pattern = r"(?<![a-z0-9_])" + pattern
+        if alias[-1].isascii() and alias[-1].isalnum():
+            pattern += r"(?![a-z0-9_])"
+        alternatives.append(pattern)
+    return re.compile("|".join(alternatives))
+
+
+_NEGATIVE_PREFIX = re.compile(
+    r"(?:不要求|无需|不需要|不涉及|不具备|不会|不熟悉|不了解|未掌握|未使用过?|没用过|没有|尚未|暂无|未接触过?|缺乏|无|计划学习|打算学习|计划使用|"
+    r"\bno|\bwithout|\bno experience (?:with|in))\s*"
+    r"(?:(?:掌握|熟练|熟悉|使用|接触|相关|任何|过)\s*)*"
+    r"(?:[a-z0-9+#.-]+(?:\s+[a-z0-9+#.-]+)*\s*(?:、|或|和|与|及|/)\s*)*$"
+)
+_NEGATIVE_SUFFIX = re.compile(
+    r"^\s*(?:并非必需|不作要求|不是必需|经验不足|经验为零|不熟悉|不会|is not required|not required)"
+)
+_WORK_ACTION = re.compile(
+    r"提取|查询|清洗|汇总|统计|核对|核算|处理|制作|生成|设计|搭建|建立|开发|构建|维护|监控|跟踪|"
+    r"分析|评估|比较|定位|筛选|计算|验证|拆解|优化|导出|输出|整理|撰写|测试|调整|"
+    r"\b(?:built|queried|cleaned|analy[sz]ed|aggregated|designed|tracked|evaluated|created)\b"
+)
+_LIST_OR_TITLE = re.compile(
+    r"^[-*#\s]*(?:(?:(?:专业|相关|个人|技术|职业|核心|软件)?技能|工具栈|项目名称|项目经历)\s*:|"
+    r"熟悉|掌握|了解|精通|擅长|熟练掌握|familiar with|skills\s*:)"
+)
+# When a JD names a specific product, a different tool from the same family is insufficient.
+_TOOL_VARIANTS = {
+    "SQL": [("mysql",), ("postgresql",), ("sql server",), ("hivesql",), ("sparksql",)],
+    "Python": [("pandas",), ("numpy",), ("scikit-learn",)],
+    "BI": [("power bi", "powerbi"), ("tableau",), ("metabase",), ("looker",)],
+    "Excel": [("power query",), ("数据透视表",)],
+}
+_CLAUSE_BREAK = re.compile(r"[\r\n。；;！？!?，,]+|(?<=\w)\.(?=\s|$)")
+
+
+def _clauses(text: str) -> list[str]:
+    return [clause.strip() for clause in _CLAUSE_BREAK.split(text or "") if clause.strip()]
+
+
+def _matching_clause(clauses: Sequence[str], aliases: Sequence[str]) -> tuple[str, bool]:
+    """Prefer a matching source clause with a concrete action over a skills listing."""
+    first_mention = ""
+    if not aliases:
+        return "", False
+    pattern = _alias_pattern(tuple(aliases))
+    for clause in clauses:
+        normalized = normalize_text(clause)
+        listed = _LIST_OR_TITLE.match(normalized)
+        for match in pattern.finditer(normalized):
+            # Limit the evidence to nearby words even in unpunctuated pasted paragraphs.
+            before = normalized[max(0, match.start() - 80):match.start()]
+            after = normalized[match.end():match.end() + 80]
+            if _NEGATIVE_PREFIX.search(before) or _NEGATIVE_SUFFIX.match(after):
+                continue
+            if not first_mention:
+                first_mention = clause
+            if not listed and _WORK_ACTION.search(before + " " + after):
+                return clause, True
+    return first_mention, False
+
+
 def text_contains_any(text: str, aliases: Iterable[str]) -> bool:
-    normalized = normalize_text(text)
-    return any(alias.lower() in normalized for alias in aliases)
+    evidence, _ = _matching_clause(_clauses(text), tuple(aliases))
+    return bool(evidence)
 
 
 def extract_jd_keywords(jd_text: str) -> List[str]:
-    found = [rule.keyword for rule in KEYWORD_RULES if text_contains_any(jd_text, rule.aliases)]
-    if found:
-        return found
-    return list(DEFAULT_KEYWORDS[:3])
+    clauses = _clauses(jd_text)
+    return [rule.keyword for rule in KEYWORD_RULES if _matching_clause(clauses, rule.aliases)[0]]
 
 
 def get_rule(keyword: str) -> KeywordRule | None:
-    for rule in KEYWORD_RULES:
-        if rule.keyword == keyword:
-            return rule
-    return None
+    return next((rule for rule in KEYWORD_RULES if rule.keyword == keyword), None)
 
 
 def categorize_keywords(keywords: Sequence[str]) -> Dict[str, List[str]]:
-    result: Dict[str, List[str]] = {}
+    result = {}
     for category, category_keywords in KEYWORD_CATEGORIES.items():
         matched = [keyword for keyword in category_keywords if keyword in keywords]
         if matched:
             result[category] = matched
-    uncategorized = [keyword for keyword in keywords if not any(keyword in values for values in KEYWORD_CATEGORIES.values())]
-    if uncategorized:
-        result["其他能力"] = uncategorized
+    categorized = {keyword for group in result.values() for keyword in group}
+    remaining = [keyword for keyword in keywords if keyword not in categorized]
+    if remaining:
+        result["其他能力"] = remaining
     return result
 
 
 def analyze_resume_gaps(resume_text: str, jd_text: str) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-    resume_length = len(resume_text or "")
-    for keyword in extract_jd_keywords(jd_text):
-        rule = get_rule(keyword)
-        if not rule:
+    jd_clauses = _clauses(jd_text)
+    resume_clauses = _clauses(resume_text)
+    rows = []
+    for rule in KEYWORD_RULES:
+        jd_evidence, _ = _matching_clause(jd_clauses, rule.aliases)
+        if not jd_evidence:
             continue
-        covered = text_contains_any(resume_text, rule.aliases)
-        if covered and resume_length >= 240:
-            status = "已覆盖"
-            priority = "低"
-            advice = "已覆盖该能力，可继续补充量化结果或业务影响。"
-        elif covered:
-            status = "弱覆盖"
-            priority = "中"
-            advice = rule.suggestion_template.format(keyword=keyword)
-        else:
-            status = "未覆盖"
-            priority = "高"
-            advice = rule.suggestion_template.format(keyword=keyword)
-        rows.append(
-            {
-                "JD 要求": keyword,
-                "简历覆盖状态": status,
-                "优先级": priority,
-                "优化建议": advice,
-            }
+        resume_aliases = rule.aliases
+        named_aliases = tuple(
+            alias for variant in _TOOL_VARIANTS.get(rule.keyword, [])
+            if _matching_clause(jd_clauses, variant)[0] for alias in variant
         )
-    priority_order = {"高": 0, "中": 1, "低": 2}
-    return sorted(rows, key=lambda row: priority_order[row["优先级"]])
+        if named_aliases:
+            # A generic alternative ("Python 或 pandas") also permits other family aliases.
+            names = _alias_pattern(named_aliases)
+            generic_clauses = [names.sub(" ", normalize_text(clause)) for clause in jd_clauses]
+            if not _matching_clause(generic_clauses, (rule.keyword,))[0]:
+                resume_aliases = named_aliases
+        evidence, has_action = _matching_clause(resume_clauses, resume_aliases)
+        if has_action:
+            status, priority, advice = "已覆盖", "低", "原文同时提到了相关关键词和工作动作，可核对这句是否准确描述了本人的职责。"
+        elif evidence:
+            status, priority, advice = "弱覆盖", "中", rule.suggestion_template
+        else:
+            status, priority = "未覆盖", "高"
+            advice = "如果有相关经历，可以按以下方式补充，否则跳过本条。" + rule.suggestion_template
+        rows.append({
+            "JD 要求": rule.keyword,
+            "简历覆盖状态": status,
+            "优先级": priority,
+            "JD 原文": jd_evidence,
+            "简历原文": evidence,
+            "优化建议": advice,
+        })
+    order = {"高": 0, "中": 1, "低": 2}
+    return sorted(rows, key=lambda row: order[row["优先级"]])
 
 
 def calculate_match_score(resume_text: str, jd_text: str) -> int:
-    jd_keywords = extract_jd_keywords(jd_text)
-    if not jd_keywords:
-        return 0
-    covered = 0
-    for rule in KEYWORD_RULES:
-        if rule.keyword in jd_keywords and text_contains_any(resume_text, rule.aliases):
-            covered += 1
-    return int(round(covered / len(jd_keywords) * 100))
+    """Percentage of recognized JD keyword groups also mentioned in the resume."""
+    gaps = analyze_resume_gaps(resume_text, jd_text)
+    if not gaps:
+        return 0  # Legacy integer return. The interface shows no score for an unsupported JD.
+    mentioned = sum(bool(row["简历原文"]) for row in gaps)
+    return round(100 * mentioned / len(gaps))
 
 
 def generate_suggestions(
@@ -205,105 +241,52 @@ def generate_suggestions(
     if suggestion_provider != "mock":
         raise NotImplementedError("API provider is reserved for future model integration.")
 
-    jd_keywords = extract_jd_keywords(jd_text)
-    suggestions: List[Dict[str, object]] = []
-
-    for rule in KEYWORD_RULES:
-        if rule.keyword not in jd_keywords:
+    suggestions = []
+    for gap in analyze_resume_gaps(resume_text, jd_text):
+        if gap["简历覆盖状态"] == "已覆盖":
             continue
-
-        covered = text_contains_any(resume_text, rule.aliases)
-        weak_expression = covered and len(resume_text) < 240
-        if covered and not weak_expression:
-            continue
-
-        jd_match_score = 5 if prompt_group == "B" else 3
-        specificity_score = 4 if covered else 5
-        actionability_score = 5 if rule.resume_section in ("技能", "项目经历") else 4
-        suggestion_id = stable_id("sg", task_id, user_id, rule.keyword)
-
-        suggestions.append(
-            {
-                "suggestion_id": suggestion_id,
-                "task_id": task_id,
-                "user_id": user_id,
-                "prompt_group": prompt_group,
-                "resume_section": rule.resume_section,
-                "original_expression": _original_expression_for(rule.keyword, covered),
-                "current_problem": rule.problem_template.format(keyword=rule.keyword),
-                "suggestion": rule.suggestion_template.format(keyword=rule.keyword),
-                "revised_example": rule.example_template.format(keyword=rule.keyword),
-                "revised_expression": rule.example_template.format(keyword=rule.keyword),
-                "matched_jd_keywords": [rule.keyword],
-                "matched_keyword": rule.keyword,
-                "suggestion_type": rule.suggestion_type,
-                "specificity_score": specificity_score,
-                "jd_match_score": jd_match_score,
-                "actionability_score": actionability_score,
-                "adopted": None,
-                "status": "pending",
-            }
-        )
-
-    if len(suggestions) < 3:
-        suggestions.extend(
-            _fallback_suggestions(
-                resume_text=resume_text,
-                task_id=task_id,
-                user_id=user_id,
-                prompt_group=prompt_group,
-                existing_keywords={item["matched_keyword"] for item in suggestions},
-            )
-        )
-
-    return suggestions[:6]
+        keyword = gap["JD 要求"]
+        rule = get_rule(keyword)
+        evidence = gap["简历原文"]
+        if evidence:
+            problem = f"简历提到了{keyword}相关内容，规则未在这段文字里识别到具体工作动作。"
+        else:
+            problem = f"JD 提到了{keyword}，规则未从简历中识别到相应表述。"
+        if prompt_group == "A":
+            advice = "回顾一段相关经历，按工作背景、本人动作和实际交付物补写一句。有依据时再填写。"
+            template = "在【真实场景】中，我负责【本人动作】，交付【实际成果】。"
+        else:
+            advice = gap["优化建议"]
+            template = rule.example_template
+        suggestions.append({
+            "suggestion_id": stable_id("sg", task_id, user_id, keyword),
+            "task_id": task_id,
+            "user_id": user_id,
+            "prompt_group": prompt_group,
+            "resume_section": rule.resume_section,
+            "original_expression": evidence,
+            "jd_evidence": gap["JD 原文"],
+            "current_problem": problem,
+            "suggestion": advice,
+            "revised_example": template,
+            "revised_expression": template,
+            "matched_jd_keywords": [keyword],
+            "matched_keyword": keyword,
+            "suggestion_type": rule.suggestion_type,
+            "specificity_score": 3 + int(bool(evidence)) + int(prompt_group == "B"),
+            "jd_match_score": 5 if prompt_group == "B" else 3,
+            "actionability_score": 4,
+            "adopted": None,
+            "status": "pending",
+        })
+    return suggestions
 
 
-def _fallback_suggestions(
-    resume_text: str,
-    task_id: str,
-    user_id: str,
-    prompt_group: str,
-    existing_keywords: set,
-) -> List[Dict[str, object]]:
-    fallback_rules = [
-        ("量化结果", "项目经历", "项目表达", "简历中的项目结果还不够量化。", "为项目补充转化率、效率、采纳率或覆盖用户数等量化结果。", "将“完成数据分析”改为“搭建漏斗看板并定位核心流失环节，推动建议采纳率优化”。"),
-        ("业务闭环", "项目经历", "业务表达", "简历对业务问题、分析过程和优化动作的闭环表达不足。", "按“业务问题-指标拆解-分析发现-优化建议”重写项目描述。", "围绕 AI 简历优化流程拆解用户路径，基于模拟日志评估采纳行为并提出产品迭代方向。"),
-        ("工具栈", "技能", "工具表达", "简历没有集中展示本项目使用的分析和可视化工具。", "在技能或项目中补充 Python、Pandas、Streamlit、Plotly 等工具。", "使用 Python、Pandas 和 Plotly 完成数据清洗、指标计算和 Streamlit 本地看板搭建。"),
-    ]
-    rows: List[Dict[str, object]] = []
-    for keyword, section, suggestion_type, problem, suggestion, example in fallback_rules:
-        if keyword in existing_keywords:
-            continue
-        rows.append(
-            {
-                "suggestion_id": stable_id("sg", task_id, user_id, keyword),
-                "task_id": task_id,
-                "user_id": user_id,
-                "prompt_group": prompt_group,
-                "resume_section": section,
-                "original_expression": f"简历中对“{keyword}”的表达不够具体，缺少场景、动作或结果。",
-                "current_problem": problem,
-                "suggestion": suggestion,
-                "revised_example": example,
-                "revised_expression": example,
-                "matched_jd_keywords": [keyword],
-                "matched_keyword": keyword,
-                "suggestion_type": suggestion_type,
-                "specificity_score": 4,
-                "jd_match_score": 4 if prompt_group == "B" else 3,
-                "actionability_score": 5,
-                "adopted": None,
-                "status": "pending",
-            }
-        )
-    return rows
-
-
-def _original_expression_for(keyword: str, covered: bool) -> str:
-    if covered:
-        return f"简历中已提到“{keyword}”，但表达偏概括，缺少业务场景、分析动作或结果。"
-    return f"简历中暂未明确体现“{keyword}”相关能力。"
+def _report_quote(value: str) -> str:
+    # A longer Markdown fence keeps even pasted HTML/Markdown as literal text.
+    backticks = re.findall(r"`+", value)
+    fence = "`" * max(3, max(map(len, backticks), default=0) + 1)
+    return f"{fence}text\n{value}\n{fence}"
 
 
 def build_report_markdown(
@@ -313,36 +296,39 @@ def build_report_markdown(
     original_match_score: int,
     optimized_match_score: int,
 ) -> str:
+    """Build from source text. Old score arguments remain available to existing callers."""
+    gaps = analyze_resume_gaps(resume_text, jd_text)
+    mentioned = sum(bool(row["简历原文"]) for row in gaps)
+    coverage = f"{round(100 * mentioned / len(gaps))}%（{mentioned}/{len(gaps)} 项）" if gaps else "无法计算（未识别到支持的 JD 关键词）"
+    labels = {"adopted": "已采纳", "rejected": "未采纳", "pending": "待处理"}
+    statuses = []
+    for item in suggestions:
+        legacy_status = {True: "adopted", False: "rejected"}.get(item.get("adopted"), "pending")
+        statuses.append(labels.get(item.get("status", legacy_status), "待处理"))
     lines = [
-        "# AI 简历优化建议报告",
-        "",
-        "## 匹配度概览",
-        "",
-        f"- 优化前模拟匹配分：{original_match_score}",
-        f"- 优化后模拟匹配分：{optimized_match_score}",
-        f"- 建议总数：{len(suggestions)}",
-        f"- 已采纳建议数：{sum(1 for item in suggestions if item.get('adopted') is True)}",
-        "",
-        "## 优化建议",
-        "",
+        "# 简历优化建议报告", "", "## 匹配概览", "",
+        f"- 输入简历的 JD 关键词覆盖率 {coverage}",
+        "- 覆盖率按当前简历提及的关键词类别数除以 JD 中识别的类别数计算。采纳操作只记录修改意向。",
+        f"- 共 {len(suggestions)} 条建议，已采纳 {statuses.count('已采纳')} 条，未采纳 {statuses.count('未采纳')} 条，待处理 {statuses.count('待处理')} 条。",
+        "", "## 优化建议", "",
     ]
-    for index, item in enumerate(suggestions, start=1):
-        status = "已采纳" if item.get("adopted") is True else "未采纳"
-        keywords = ", ".join(item.get("matched_jd_keywords") or [item.get("matched_keyword", "")])
-        lines.extend(
-            [
-                f"### {index}. {item['suggestion_type']}（{status}）",
-                "",
-                f"- 匹配 JD 关键词：{keywords}",
-                f"- 简历模块：{item['resume_section']}",
-                f"- 问题定位：{item['current_problem']}",
-                f"- 修改建议：{item['suggestion']}",
-                f"- 原表达：{item.get('original_expression', '')}",
-                f"- 优化后表达：{item.get('revised_expression', item.get('revised_example', ''))}",
-                f"- 示例改写：{item['revised_example']}",
-                f"- 质量评分：具体性 {item['specificity_score']} / JD 匹配度 {item['jd_match_score']} / 可执行性 {item['actionability_score']}",
-                "",
-            ]
-        )
-    lines.extend(["## 原始输入摘要", "", "### JD", "", jd_text[:1200], "", "### 简历", "", resume_text[:1200]])
+    if not suggestions:
+        lines.append("已识别的关键词均有相关工作动作表述。" if gaps and all(row["简历覆盖状态"] == "已覆盖" for row in gaps)
+                     else "此次没有可展示的建议。")
+    for index, (item, status) in enumerate(zip(suggestions, statuses), start=1):
+        keyword = "、".join(item.get("matched_jd_keywords") or [item.get("matched_keyword", "")])
+        lines.extend([
+            f"### {index}. {keyword}（{status}）", "",
+            f"简历模块 · {item['resume_section']}", "",
+            item["current_problem"], "",
+        ])
+        for label, field in (("JD 原文", "jd_evidence"), ("简历原文", "original_expression")):
+            if item.get(field):
+                lines.extend([label, "", _report_quote(str(item[field])), ""])
+        lines.extend([
+            str(item["suggestion"]), "",
+            "按真实经历填写", "", _report_quote(str(item.get("revised_expression") or item.get("revised_example", ""))), "",
+        ])
+    lines.extend(["## 输入摘录", "", "以下各保留前 1,200 个字符。", "", "### JD", "",
+                  _report_quote(jd_text[:1200]), "", "### 简历", "", _report_quote(resume_text[:1200])])
     return "\n".join(lines)

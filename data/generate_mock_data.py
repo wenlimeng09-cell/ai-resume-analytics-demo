@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 from logic.resume_analyzer import calculate_match_score, generate_suggestions
 
 
-DATA_DIR = ROOT / "data"
+DATA_DIR = ROOT / "work" / "generated-data"
 RANDOM_SEED = 42
 
 USER_TYPES = ["应届生", "实习生", "转行用户"]
@@ -124,7 +124,8 @@ def make_tasks_events_suggestions(users: pd.DataFrame) -> tuple[pd.DataFrame, pd
             task_id = f"t_{task_index:05d}"
             jd_id = f"jd_{role}_{random.randint(1, 12):02d}"
             session_id = f"s_{task_index:05d}"
-            created_time = random_time(start)
+            earliest_visit = max(start, datetime.fromisoformat(user["register_date"]))
+            created_time = random_time(earliest_visit)
             probs = probability_for_task(user["user_type"], prompt_group)
 
             add_event(events, user["user_id"], task_id, session_id, created_time, "visit_product", prompt_group=prompt_group)
@@ -139,7 +140,6 @@ def make_tasks_events_suggestions(users: pd.DataFrame) -> tuple[pd.DataFrame, pd
             if random.random() > probs["generate_suggestion"]:
                 task_index += 1
                 continue
-            add_event(events, user["user_id"], task_id, session_id, created_time + timedelta(minutes=3), "generate_suggestion", prompt_group=prompt_group)
 
             generated = generate_suggestions(
                 resume_text=resume_text,
@@ -148,6 +148,11 @@ def make_tasks_events_suggestions(users: pd.DataFrame) -> tuple[pd.DataFrame, pd
                 user_id=user["user_id"],
                 prompt_group=prompt_group,
             )
+
+            if not generated:
+                task_index += 1
+                continue
+            add_event(events, user["user_id"], task_id, session_id, created_time + timedelta(minutes=3), "generate_suggestion", prompt_group=prompt_group)
 
             adopted_count = 0
             rejected_count = 0
@@ -243,7 +248,7 @@ def make_tasks_events_suggestions(users: pd.DataFrame) -> tuple[pd.DataFrame, pd
 
 
 def save_outputs(tables: Dict[str, pd.DataFrame]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     for name, df in tables.items():
         df.to_csv(DATA_DIR / f"{name}.csv", index=False, encoding="utf-8-sig")
 
@@ -267,7 +272,7 @@ def main() -> None:
             "feedback": feedback,
         }
     )
-    print(f"Generated {len(users)} users, {len(tasks)} tasks, {len(events)} events, {len(suggestions)} suggestions.")
+    print(f"Generated {len(users)} users, {len(tasks)} tasks, {len(events)} events, {len(suggestions)} suggestions in {DATA_DIR}.")
 
 
 if __name__ == "__main__":
